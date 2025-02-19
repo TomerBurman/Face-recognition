@@ -8,3 +8,4 @@ venv/
 data/
 # Model checkpoints
 models/
+tokens
