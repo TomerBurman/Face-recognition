@@ -1,3 +1,11 @@
+"""
+preprocessed_images.py
+
+This module preprocesses raw face images from a dataset, performing face detection, alignment,
+data augmentation, and resizing. For each image with exactly one detected face, it generates
+multiple augmented copies and saves them to disk.
+"""
+
 import os
 import cv2
 import numpy as np
@@ -11,17 +19,17 @@ class DataPreprocessor:
                  confidence_threshold=0.90, max_angle=45, blur_threshold=100,
                  augment=True, num_augmented=10):
         """
-        Initializes the preprocessor.
+        Initializes the DataPreprocessor.
 
         Args:
-            input_dir (str): Directory of raw images, structured as one folder per person.
+            input_dir (str): Directory of raw images, organized by person.
             output_dir (str): Directory to save processed images.
-            target_size (tuple): Output image size.
+            target_size (tuple): Desired output size.
             confidence_threshold (float): Minimum face detection confidence.
-            max_angle (float): Maximum allowed rotation angle in degrees.
-            blur_threshold (float): Threshold for blur detection (not used since blurred images are discarded).
+            max_angle (float): Maximum allowed rotation (in degrees) for alignment.
+            blur_threshold (float): Threshold for detecting blurred images.
             augment (bool): Whether to apply data augmentation.
-            num_augmented (int): Number of augmented copies per face.
+            num_augmented (int): Number of augmented copies to generate per face.
         """
         self.input_dir = input_dir
         self.output_dir = output_dir
@@ -36,11 +44,10 @@ class DataPreprocessor:
 
     def align_face(self, image, keypoints):
         """
-        Aligns the face image using the positions of the left and right eyes.
-        Rotates the face so that the eyes are horizontal.
+        Aligns the face image based on the positions of the left and right eyes.
 
         Args:
-            image (numpy.ndarray): Cropped face image in RGB.
+            image (numpy.ndarray): Cropped face image (RGB).
             keypoints (dict): Contains 'left_eye' and 'right_eye'.
 
         Returns:
@@ -68,26 +75,19 @@ class DataPreprocessor:
 
     def data_aug(self, face):
         """
-        Applies data augmentation to the face image:
-        - Random brightness adjustment.
-        - Random contrast adjustment.
-        - Random horizontal flip.
-        - Random JPEG quality adjustment.
-        - Random saturation adjustment.
-        
+        Applies data augmentation to the face image using TensorFlow's stateless random operations.
+
         Args:
-            face (numpy.ndarray): Input face image in RGB (float32, [0,255]).
-            
+            face (numpy.ndarray): Face image in RGB (float32, [0,255]).
+
         Returns:
             list: A list of augmented images (NumPy arrays).
         """
-        # Convert face to TensorFlow tensor.
         face_tensor = tf.convert_to_tensor(face, dtype=tf.float32)
         augmented_list = []
         for _ in range(self.num_augmented):
-            aug_img = face_tensor  # start from original face
-            
-            # Generate random seeds
+            aug_img = face_tensor
+            # Generate random seeds for each augmentation operation.
             seed1 = (np.random.randint(10000), np.random.randint(10000))
             seed2 = (np.random.randint(10000), np.random.randint(10000))
             seed3 = (np.random.randint(10000), np.random.randint(10000))
@@ -97,27 +97,26 @@ class DataPreprocessor:
             aug_img = tf.image.stateless_random_brightness(aug_img, max_delta=0.02, seed=seed1)
             aug_img = tf.image.stateless_random_contrast(aug_img, lower=0.6, upper=1.0, seed=seed2)
             aug_img = tf.image.stateless_random_flip_left_right(aug_img, seed=seed3)
-            
-            # Convert to uint8 before JPEG quality adjustment
+            # Convert to uint8 for JPEG quality augmentation.
             aug_img_uint8 = tf.cast(tf.clip_by_value(aug_img, 0, 255), tf.uint8)
             aug_img_uint8 = tf.image.stateless_random_jpeg_quality(
                 aug_img_uint8, min_jpeg_quality=90, max_jpeg_quality=100, seed=seed4
             )
-            # Convert back to float32
             aug_img = tf.cast(aug_img_uint8, tf.float32)
-            
             aug_img = tf.image.stateless_random_saturation(aug_img, lower=0.9, upper=1.0, seed=seed5)
-            
             augmented_list.append(aug_img.numpy())
         return augmented_list
 
-
     def process_image(self, image_path):
         """
-        Processes a single image: detects, aligns, applies augmentation,
-        and resizes the face.
-        
-        Returns a list of processed face images.
+        Processes a single image: detects the face, aligns it, applies augmentation,
+        and resizes to the target size.
+
+        Args:
+            image_path (str): Path to the image file.
+
+        Returns:
+            list: A list of processed face images.
         """
         image = cv2.imread(image_path)
         if image is None:
@@ -126,7 +125,7 @@ class DataPreprocessor:
 
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         results = self.detector.detect_faces(image_rgb)
-        if len(results) == 0:
+        if not results:
             print(f"[Info] No face detected in image: {image_path}")
             return []
 
@@ -147,25 +146,22 @@ class DataPreprocessor:
                     continue
                 face = aligned_face
 
-            # Generate augmented copies.
-            if self.augment:
-                augmented_faces = self.data_aug(face)
-            else:
-                augmented_faces = [face]
+            # Generate augmented copies if augmentation is enabled.
+            augmented_faces = self.data_aug(face) if self.augment else [face]
 
-            # Resize each augmented face to target size.
             for aug_face in augmented_faces:
                 face_resized = cv2.resize(aug_face, self.target_size)
-                face_float32 = face_resized.astype('float32')
-                processed_faces.append(face_float32)
+                processed_faces.append(face_resized.astype('float32'))
 
         return processed_faces
 
     def process_dataset(self):
         """
-        Processes the entire dataset.
-        For each image, if exactly one face is detected, it generates augmented copies and saves them.
-        Otherwise, it discards the image.
+        Processes the entire dataset. For each image with exactly one detected face,
+        it generates augmented copies and saves them. If an image produces an unexpected
+        number of faces, it is discarded.
+
+        Files are saved in the output directory under subdirectories named after each person.
         """
         persons = os.listdir(self.input_dir)
         for person in persons:
@@ -180,7 +176,6 @@ class DataPreprocessor:
                 image_path = os.path.join(person_input_dir, image_name)
                 faces = self.process_image(image_path)
                 if faces:
-                    # Expect exactly num_augmented copies for a valid face.
                     if len(faces) == self.num_augmented:
                         for i, face in enumerate(faces):
                             face_bgr = cv2.cvtColor(face.astype('uint8'), cv2.COLOR_RGB2BGR)
@@ -194,26 +189,10 @@ class DataPreprocessor:
                 else:
                     print(f"[Info] Skipping image: {image_path}")
 
-    def is_blurry(self, image):
-        """
-        Checks if an image is blurry by computing the Laplacian variance.
-        """
-        if len(image.shape) == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = image
-        # Convert gray image to uint8 if it's not already.
-        if gray.dtype != 'uint8':
-            gray = gray.astype('uint8')
-        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-        variance = laplacian.var()
-        return variance < self.blur_threshold
-
-
 if __name__ == '__main__':
     preprocessor = DataPreprocessor(
-        input_dir='../lfw-deepfunneled/',
-        output_dir='../data_processed',
+        input_dir='../lfw-deepfunneled/', # Raw dataset input dir
+        output_dir='../data_processed', # processed data dir
         target_size=(224, 224),
         confidence_threshold=0.90,
         max_angle=45,
